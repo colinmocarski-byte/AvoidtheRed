@@ -1,0 +1,223 @@
+
+
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<title>Lane Flip – Wechsel die Spur</title>
+<meta name="description" content="Tippen zum Spurwechsel. Weiche den Blöcken aus. 3 Leben.">
+<style>
+  :root{--bg:#0f1220;--fg:#eef1ff;--mut:#9aa3c7;--acc:#62ff8e;--danger:#ff6b6b;--panel:#111936}
+  *{box-sizing:border-box} html,body{height:100%;margin:0;background:#0f1220;color:var(--fg);font-family:system-ui,-apple-system,Segoe UI,Roboto}
+  header,footer{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--panel)}
+  #wrap{height:calc(100% - 96px);display:flex;flex-direction:column}
+  .topbar{display:flex;gap:12px;align-items:center}
+  button{border:none;border-radius:12px;padding:10px 14px;font-weight:800;cursor:pointer}
+  .primary{background:var(--acc);color:#06250f}
+  .ghost{background:transparent;color:var(--fg);border:1px solid #2a3568}
+  .hint{padding:12px 14px;text-align:center;color:var(--mut);background:linear-gradient(180deg,#0f142f,#0e1330)}
+  canvas{flex:1;width:100%;height:100%;display:block;touch-action:none}
+  .chip{border:1px solid #2a3568;color:var(--mut);padding:6px 10px;border-radius:999px;font-size:12px;margin:0 6px}
+</style>
+</head>
+<body>
+<header>
+  <div class="topbar">
+    <div id="score">Score: 0</div>
+    <div id="lives">❤❤❤</div>
+    <div id="best">Best: 0</div>
+  </div>
+  <div class="topbar">
+    <button id="startBtn" class="primary">Start</button>
+    <button id="shareBtn" class="ghost">Teilen</button>
+  </div>
+</header>
+
+<div id="wrap">
+  <div class="hint">Tippe im Spielfeld, um die Spur zu wechseln (oben ↔ unten). Weiche den Blöcken aus.</div>
+  <canvas id="game"></canvas>
+</div>
+
+<footer>
+  <div class="chip">Ein Tap zum Wechseln</div>
+  <div class="chip">3 Leben</div>
+  <div class="chip">Lokaler Highscore</div>
+</footer>
+
+<script>
+(()=>{
+// DOM
+const cvs = document.getElementById('game'), ctx = cvs.getContext('2d');
+const scoreEl = document.getElementById('score'), livesEl = document.getElementById('lives'), bestEl = document.getElementById('best');
+const startBtn = document.getElementById('startBtn'), shareBtn = document.getElementById('shareBtn');
+
+// Highscore
+let best = Number(localStorage.getItem('laneflip_best')||0);
+bestEl.textContent = 'Best: '+best;
+
+// Canvas fit
+function fit(){
+  const dpr = Math.max(1, Math.min(3, window.devicePixelRatio||1));
+  const r = cvs.getBoundingClientRect();
+  cvs.width = Math.floor(r.width*dpr); cvs.height = Math.floor(r.height*dpr);
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+}
+window.addEventListener('resize', fit, {passive:true}); fit();
+
+// Game state
+let running=false, score=0, lives=3;
+let speed=180;           // px/s (Basis)
+let spawnEvery=850;      // ms
+let lastSpawn=0, tPrev=0;
+let playerLane=0;        // 0=oben, 1=unten
+const obstacles=[];
+
+function hud(){
+  scoreEl.textContent = 'Score: '+score;
+  livesEl.textContent = '❤'.repeat(lives);
+  bestEl.textContent = 'Best: '+best;
+}
+
+function reset(){
+  running=false; score=0; lives=3;
+  speed=180; spawnEvery=850; lastSpawn=0; tPrev=0;
+  playerLane=0; obstacles.length=0;
+  hud(); draw();
+}
+
+function vibrate(ms=30){ if('vibrate' in navigator) try{ navigator.vibrate(ms);}catch{} }
+
+// Geometry helpers
+function lanes(h){ // returns y positions for two lanes
+  const pad = Math.max(24, h*0.1);
+  return [pad + (h-pad*2)*0.35, pad + (h-pad*2)*0.75];
+}
+
+function spawn(){
+  const h = cvs.clientHeight; const w = cvs.clientWidth;
+  const [yTop, yBot] = lanes(h);
+  const lane = Math.random()<0.5?0:1;
+  const y = lane===0 ? yTop : yBot;
+  const width = Math.max(28, Math.min(80, 40 + Math.random()*50));
+  const height= 20 + Math.random()*18;
+  obstacles.push({ x:w+width, y:y-height/2, w:width, h:height, lane });
+}
+
+function draw(){
+  const w=cvs.clientWidth, h=cvs.clientHeight;
+  ctx.clearRect(0,0,w,h);
+
+  // Fahrbahnlinien
+  ctx.strokeStyle = '#1a2550'; ctx.lineWidth = 2;
+  const [yTop, yBot] = lanes(h);
+  ctx.beginPath(); ctx.moveTo(0,yTop); ctx.lineTo(w,yTop); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(0,yBot); ctx.lineTo(w,yBot); ctx.stroke();
+
+  // Player
+  const px = Math.max(40, Math.min(80, w*0.12));
+  const py = playerLane===0? yTop : yBot;
+  const pr = 14;
+  ctx.beginPath(); ctx.arc(px,py,pr,0,Math.PI*2);
+  ctx.fillStyle = '#62ff8e'; ctx.shadowColor='#62ff8e'; ctx.shadowBlur=10; ctx.fill(); ctx.shadowBlur=0;
+
+  // Obstacles
+  ctx.fillStyle = '#ff6b6b';
+  for(const o of obstacles){ ctx.fillRect(o.x,o.y,o.w,o.h); }
+
+  // Score Hinweis
+  ctx.fillStyle='#9aa3c7'; ctx.font='13px system-ui';
+  ctx.fillText('Tippe, um zu wechseln', 10, 16);
+}
+
+function collideCircleRect(cx,cy,r, rx,ry,rw,rh){
+  // nächster Punkt im Rechteck
+  const nx = Math.max(rx, Math.min(cx, rx+rw));
+  const ny = Math.max(ry, Math.min(cy, ry+rh));
+  const dx = cx - nx, dy = cy - ny;
+  return dx*dx + dy*dy <= r*r;
+}
+
+// Main loop
+function tick(ts){
+  if(!running){ draw(); return; }
+  if(!tPrev) tPrev = ts;
+  const dt = (ts - tPrev)/1000; tPrev = ts;
+
+  const w=cvs.clientWidth, h=cvs.clientHeight;
+  const [yTop, yBot] = lanes(h);
+  const px = Math.max(40, Math.min(80, w*0.12));
+  const py = playerLane===0? yTop : yBot; const pr=14;
+
+  // spawn logic
+  lastSpawn += dt*1000;
+  if(lastSpawn >= spawnEvery){
+    lastSpawn = 0; spawn();
+    // schwerer
+    speed = Math.min(420, speed + 10);
+    spawnEvery = Math.max(380, spawnEvery - 18);
+  }
+
+  // move obstacles
+  for(let i=obstacles.length-1;i>=0;i--){
+    const o = obstacles[i];
+    o.x -= speed*dt;
+    // pass score
+    if(!o.scored && o.x + o.w < px - pr){
+      o.scored = true; score++; hud();
+    }
+    // collision
+    if(collideCircleRect(px,py,pr, o.x,o.y,o.w,o.h)){
+      obstacles.splice(i,1);
+      lives--; hud(); vibrate(70);
+      if(lives<=0){ return gameOver(); }
+    } else if(o.x + o.w < -10){
+      obstacles.splice(i,1);
+    }
+  }
+
+  // render
+  draw();
+  requestAnimationFrame(tick);
+}
+
+function gameOver(){
+  running=false;
+  if(score>best){ best=score; localStorage.setItem('laneflip_best', String(best)); }
+  startBtn.textContent='Nochmal';
+  startBtn.style.display='inline-block';
+}
+
+// Input
+cvs.addEventListener('pointerdown', ()=>{
+  if(!running) return;
+  playerLane = 1 - playerLane; // toggle
+  vibrate(12);
+}, {passive:true});
+
+startBtn.addEventListener('click', ()=>{
+  startBtn.style.display='none';
+  reset();
+  running=true;
+  requestAnimationFrame(tick);
+});
+
+shareBtn.addEventListener('click', async ()=>{
+  const text = `Mein Lane-Flip-Highscore: ${best}`;
+  const url = location.href;
+  if(navigator.share){
+    try{ await navigator.share({title:'Lane Flip', text, url}); } catch{}
+  } else {
+    try{ await navigator.clipboard.writeText(`${text} — ${url}`); 
+         shareBtn.textContent='Link kopiert ✓'; setTimeout(()=>shareBtn.textContent='Teilen',1200); }
+    catch{ alert('Link: '+url); }
+  }
+});
+
+// Startbild
+reset();
+})();
+</script>
+</body>
+</html>
+
